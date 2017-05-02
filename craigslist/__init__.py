@@ -17,6 +17,8 @@ from six.moves import range
 
 from .sites import get_all_sites
 
+import re
+
 ALL_SITES = get_all_sites()  # All the Craiglist sites
 RESULTS_PER_REQUEST = 100  # Craigslist returns 100 results per request
 
@@ -392,6 +394,80 @@ class CraigslistHousing(CraigslistBase):
         'is_furnished': {'url_key': 'is_furnished', 'value': 1},
         'wheelchair_acccess': {'url_key': 'wheelchaccess', 'value': 1},
     }
+
+    # allow us to parse later for bedrooms, bathrooms, etc
+    custom_result_fields = True
+
+    # get the bedrooms, bathrooms, etc from listing
+    # based on https://github.com/hackoregon/housing-backend/blob/72f0698f0ce64ca3212b3ebeaff5a1b784b55312/backend/scrape/scrapers.py
+    # improved to add available date, list of amenities, allow for 1/2 bathrooms
+    def customize_result(self, result, html_row):
+        """
+        Add custom/delete/alter fields to result.
+        Get # bedrooms, baths, sqft, available date, list of amenities
+        """
+        response = requests_get(result['url'], logger=self.logger)
+        self.logger.info('GET %s', response.url)
+        self.logger.info('Response code: %s', response.status_code)
+
+        if response.ok:
+            soup = BeautifulSoup(response.content, 'html.parser')
+
+            # Get the bedrooms baths sqft badges
+            try:
+                badges = soup.find('p', {'class': 'attrgroup'}).get_text()
+            except AttributeError:
+                # raise AttributeError('Unable to find correct html elements in page (p tag with class "attrgroup")')
+                num_br = 'Unknown'
+                num_ba = 'Unknown'
+                sq_ft = 'Unknown'
+
+            if badges:
+                try:
+                    num_br = re.search(r'(?P<num_br>\d+)BR', badges).group('num_br')
+                except:
+                    num_br = 'Unknown'
+
+                try:
+                    num_ba = re.search(r'(?P<num_ba>[0-9]+\.?[0-9]*)Ba', badges).group('num_ba')
+                except:
+                    num_ba = 'Unknown'
+
+                try:
+                    sq_ft = re.search(r'(?P<sqft>\d+)ft2', badges).group('sqft')
+                except:
+                    sq_ft = 'Unknown'
+
+            # get available date
+            try:
+                available_date = soup.find('span', {'class': 'property_date'})['data-date']
+            except:
+                available_date = 'Unknown'
+
+            #get listed amenities
+            try:
+                attr_groups = soup.find_all('p', {'class': 'attrgroup'})
+                # if there is a "search for other listings" tag, we need to look at the 2nd instance of attrgroup, otherwise, look at the first
+                if attr_groups[1].find('span').has_attr('class'):
+                    amenities = attr_groups[2].get_text(" | ", strip=True)
+                else:
+                    amenities = attr_groups[1].get_text(" | ", strip=True)
+            except:
+                amenities = 'Unknown'
+
+            # append info to the result
+            custom_result = {
+                            'bedrooms': num_br,
+                            'bathrooms': num_ba,
+                            'sq_ft': sq_ft,
+                            'amenities': amenities,
+                            'available_date': available_date
+                        }
+
+            result.update(custom_result)
+
+        #and return to the caller
+        return result
 
 
 class CraigslistJobs(CraigslistBase):
